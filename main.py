@@ -25,8 +25,15 @@ async def establish_connection():
     conn = await aioodbc.connect(dsn=conn_str)
     return conn
 
-description = '''A bot designed to record ingredients'''
-bot = commands.Bot(command_prefix=['?',''], description=description)
+description = '''A bot designed to record ingredients.
+                 Use the $ or no prefix to issue a command below to the bot.
+                 Some commands are role/rank-restricted.
+                 Happy farming!'''
+
+bot = commands.Bot(command_prefix=['$',''],
+                   description=description,
+                   help_command=commands.DefaultHelpCommand(dm_help=True))
+
 bot.messagesToCheck = []
 
 @bot.event
@@ -34,6 +41,7 @@ async def on_ready():
     conn = await establish_connection()
     cur = await conn.cursor()
     bot.cur = cur
+
     print('Logged in as')
     print(bot.user.name)
     print(bot.user.id)
@@ -51,41 +59,52 @@ async def on_ready():
         if 'Payout' in role.name:
             payoutRoles.append(role.id)
         else:
+            #print(role.name, role.id)
             continue
     bot.payoutRoles = payoutRoles
+
+    # Janky way of setting payer roles
+    payerRoles = [570480920487002122, #General
+                  604144936480407553, #Retired General
+                  570483707425718273, #Captain
+                  604144737061961748, #Retired Captain
+                  626968407954292738, #Lieutenant
+                  649393731103096833 # Retired Lieutenant
+                  ]
+    bot.payerRoles = payerRoles
     bot.resources = await getResources()
     await checkMessagesForConfirmation(bot.messagesToCheck)
 
 ### HERE BE MEMES ###
-@bot.command()
+@bot.command(brief="Punish the bot")
 async def bad(ctx):
     await ctx.send("I'm sorry, I'll try to do better 😢")
 
-@bot.command()
+@bot.command(brief="Punish the bot")
 async def Bad(ctx):
     await ctx.send("I'm sorry, I'll try to do better 😢")
 
-@bot.command()
+@bot.command(brief="Praise the bot")
 async def Good(ctx):
     await ctx.send("Thanks!")
 
-@bot.command()
+@bot.command(brief="Praise the bot")
 async def good(ctx):
     await ctx.send("Thanks!")
 
-@bot.command()
+@bot.command(brief="Roast BlueAngelMan36")
 async def blue(ctx):
     await ctx.send('Blueangelman36 is a B O O M E R')
 
-@bot.command()
+@bot.command(brief="Roast BlueAngelMan36")
 async def Blue(ctx):
     await ctx.send('Blueangelman36 is a B O O M E R')
 
-@bot.command()
+@bot.command(brief="Roast Ben")
 async def ben(ctx):
     await ctx.send('Ben smells like ass, ngl.')
 
-@bot.command()
+@bot.command(brief="Roast Ben")
 async def Ben(ctx):
     await ctx.send("Ben is a bot. I know, because I am also a bot.")
 #####################
@@ -117,7 +136,7 @@ async def notifyPayoutTeam(ctx, payoutRoles = None, payoutId=None):
         list_of_roles.append(guild.get_role(role))
     send_str = f"Thank you for submitting a resource log. Your payoutId is {payoutId}. "
     send_str = send_str + f"Please wait for {[role.mention for role in list_of_roles]} to review and approve it. "
-    send_str = send_str + "You may check your balance at any time with `?balance @discordName`"
+    send_str = send_str + "You may check your balance at any time with `$balance @discordName`"
     send_str = send_str.replace("[","").replace("]","").replace("'","")
     await ctx.send(send_str)
 
@@ -205,7 +224,6 @@ async def insertMemberId(memberId, authorNickname):
     await results.commit()
 
 async def checkMessagesForConfirmation(messagesToCheck):
-    print(bot.payoutRoles)
     while True:
         for message in messagesToCheck:
             index = messagesToCheck.index(message)
@@ -218,13 +236,13 @@ async def checkMessagesForConfirmation(messagesToCheck):
                         pass
                     else:
                         for role in user.roles:
-                            if (role.id in bot.payoutRoles) and (reaction.emoji == '\U00002705'):
+                            if ((role.id in bot.payoutRoles) or (role.id in bot.payerRoles)) and (reaction.emoji == '\U00002705'):
                                 print("Confirmed!")
                                 await removeMessageToMessageList(messagesToCheck, index)
                                 await approvePayout(user.id, message.id)
                                 #TODO error logging
 
-                            elif (role.id in bot.payoutRoles) and (reaction.emoji == '\U0000274E'):
+                            elif ((role.id in bot.payoutRoles) or (role.id in bot.payerRoles)) and (reaction.emoji == '\U0000274E'):
                                 print('Rejected!')
                                 await removeMessageToMessageList(messagesToCheck, index)
                                 await rejectPayout(user.id, message.id)
@@ -248,13 +266,13 @@ async def approvePayout(messageId, approverId):
     except:
         return False
 
-# async def approveManualPayout(payoutId, approverId):
-#     try:
-#         results = await bot.cur.execute('SELECT resourcebot.approve_payout(?,?)', approverId, messageId)
-#         await results.commit()
-#         return True
-#     except:
-#         return False
+async def approveManually(payoutId, approverId):
+    try:
+        results = await bot.cur.execute('SELECT resourcebot.approve_payout(?,?)', approverId, messageId)
+        await results.commit()
+        return True
+    except:
+        return False
 
 async def rejectPayout(messageId, approverId):
     try:
@@ -287,7 +305,8 @@ async def fetchBalance(memberId):
 
 ### Actual Commands ####
 
-@bot.command()
+@bot.command(brief='Check payout balance',
+             description='Retrieves the approved, pending, and rejected payout balances.')
 async def balance(ctx, memberMention):
     memberId = memberMention.replace("@!","").replace("<","").replace(">","")
     print(f"memberId: {memberId}")
@@ -307,7 +326,7 @@ async def balance(ctx, memberMention):
             value = result[field]
 
             if type(value) is int:
-                value_fmt = '${:20,.2f}'.format(value)
+                value_fmt = '${:9,}'.format(value)
             else:
                 value_fmt = value
 
@@ -317,19 +336,28 @@ async def balance(ctx, memberMention):
     except TypeError:
         await ctx.send("This player currently doesn't have any payouts logged.")
 
-@bot.command()
+@bot.command(brief='Check payout balance',
+             description='Retrieves the approved, pending, and rejected payout balances.')
 async def Balance(ctx, memberMention):
     await balance(ctx, memberMention)
 
-@bot.command()
+@bot.command(brief='Check payout balance',
+             description='Retrieves the approved, pending, and rejected payout balances.')
 async def Balances(ctx, memberMention):
     await balance(ctx, memberMention)
 
-@bot.command()
+@bot.command(brief='Check payout balance',
+             description='Retrieves the approved, pending, and rejected payout balances.')
 async def balances(ctx, memberMention):
     await balance(ctx, memberMention)
 
-@bot.command(description="The main command for logging ingredients. Use ?log *quantity* *resource*")
+@bot.command(description="The main command for logging ingredients. MUST ATTACH A PHOTO TO THIS MESSAGE",
+             brief= "Use this to log ingredients")
+async def Log(ctx, quantity, resource):
+    await log(ctx, quantity, resource)
+
+@bot.command(description="The main command for logging ingredients. MUST ATTACH A PHOTO TO THIS MESSAGE",
+             brief= "Use this to log ingredients")
 async def log(ctx, quantity, resource):
     print("Content:", ctx.message.content)
     print("Attachments:",ctx.message.attachments)
@@ -371,7 +399,8 @@ async def log(ctx, quantity, resource):
 
     return None
 
-@bot.command()
+@bot.command(description="Returns all the resources you can currently log and their per-unit payout price.",
+             brief="See current resources & prices.")
 async def resources(ctx):
     if bot.resources is None:
         bot.resources = await getResources()
@@ -386,13 +415,58 @@ async def resources(ctx):
 
     await ctx.send(embed=embed)
 
-@bot.command()
+@bot.command(brief="See current resources & prices.")
 async def prices(ctx):
     await resources(ctx)
 
-@bot.command()
+@bot.command(description='''Use this to manually approve a payout BY payoutId in the event the bot dies. 
+            The payoutId is in the confirmation message the bot sends when it's logged. No message, it's not
+            logged.''',
+             brief="Payout Team Only! Can use this to approve payouts manually if the reactions fail")
+async def approve(ctx, payoutId):
+    print(bot.payoutRoles)
+    approver = ctx.message.author
+    memberId = approver.id
+    roles = approver.roles
+    for role in roles:
+        #print(role.id)
+        if (role.id in bot.payoutRoles) or (role.id in bot.payerRoles):
+            print('Valid approver!')
+            results = await bot.cur.execute('SELECT resourcebot.approve_payout_manual(?,?)', payoutId, memberId)
+            await results.commit()
+            await ctx.send("Approved!")
+            return
+        else:
+            continue
+
+    return print(f'{approver.mention} is not a valid approver.')
+
+@bot.command(description="Use this to log that you paid out a member for all their APPROVED payouts logged.",
+             brief="R4+ Only! Used to log a payout occurred.")
 async def payout(ctx, memberMention):
-    pass
+    message = ctx.message
+    author = message.author
+    payerId = author.id
+
+    idNums = [s for s in memberMention if s.isdigit()]
+    memberId = int(''.join(idNums))
+
+    for role in author.roles:
+        if role.id in bot.payerRoles:
+            results = await bot.cur.execute('SELECT resourcebot.payout_member(?,?)', memberId, payerId)
+            await results.commit()
+            rows = await results.fetchall()
+            total = rows[0][0]
+            if total is not None:
+                await ctx.send(f"Logged {'${:9,}'.format(total)} payout!")
+            else:
+                await ctx.send("This player did not have any approved payouts. MODS!")
+            return
+        else:
+            continue
+    await ctx.send(f"{author.mention} is not authorized to pay out members.")
+    await ctx.message.delete(delay=15)
+
 #########################
 
 
