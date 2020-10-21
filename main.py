@@ -1,5 +1,5 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord.utils import get
 from discord import Guild
 from discord import Embed
@@ -74,7 +74,9 @@ async def on_ready():
     bot.payerRoles = payerRoles
     bot.resources = await getResources()
     bot.help_command.case_insensitive = True
-    await checkMessagesForConfirmation()
+    checkMessagesForConfirmation.start()
+    updateMemberNames.start()
+
 
 ### HERE BE MEMES ###
 @bot.command(brief="Punish the bot")
@@ -215,56 +217,65 @@ async def insertMemberId(memberId, authorNickname):
     results = await cur.execute("SELECT resourcebot.insert_member(?,?)", memberId, authorNickname)
     await results.commit()
 
+@tasks.loop(seconds=1.0)
 async def checkMessagesForConfirmation():
-    while True:
-        cur = await bot.conn.cursor()
-        sql = await cur.execute("SELECT * FROM resourcebot.payouts_to_approve")
-        results = await sql.fetchall()
-        if len(results) > 0:
-            for row in results:
-                print(row)
-                message_id = row[0]
-                channel_id = row[1]
-                channel = bot.guilds[0].get_channel(channel_id) # TODO: Remove this in favor of something less hardcoded
-                try:
-                    newMsg = await channel.fetch_message(message_id)
-                except discord.errors.NotFound: #TODO: This shouldn't be handled here.
-                    print(f"Message {message_id} has been deleted in {channel}.")
-                    print("Removing this log from the database.")
-                    cur = await bot.conn.cursor()
-                    trxn = await cur.execute(f'DELETE FROM resourcebot.payouts WHERE message_id = {message_id}')
-                    trxn.commit()
-                    continue
-                reactions = newMsg.reactions
-                for reaction in reactions:
-                    async for user in reaction.users():
-                        if user.bot:
-                            pass
-                        else:
-                            for role in user.roles:
-                                if ((role.id in bot.payoutRoles) or (role.id in bot.payerRoles)) and (reaction.emoji == '\U00002705'):
-                                    print("Confirmed!")
-                                    payoutId = await approvePayout(user.id, message_id)
-                                    await user.send(f"You have approved payoutId {payoutId} for {newMsg.author.nick}")
-                                    await newMsg.add_reaction('\U0001F197')
-                                    break
-                                    #removeMessageToMessageList(index)
-                                    #TODO error logging
+    cur = await bot.conn.cursor()
+    sql = await cur.execute("SELECT * FROM resourcebot.payouts_to_approve")
+    results = await sql.fetchall()
 
-                                elif ((role.id in bot.payoutRoles) or (role.id in bot.payerRoles)) and (reaction.emoji == '\U0000274E'):
-                                    print('Rejected!')
-                                    await rejectPayout(user.id, message_id)
-                                    break
-                                    #removeMessageToMessageList(index)
-                                    #TODO error logging
+    if len(results) > 0:
+        for row in results:
+            #print(row)
+            message_id = row[0]
+            channel_id = row[1]
+            channel = bot.guilds[0].get_channel(channel_id) # TODO: Remove this in favor of something less hardcoded
+            try:
+                newMsg = await channel.fetch_message(message_id)
+            except discord.errors.NotFound: #TODO: This shouldn't be handled here.
+                print(f"Message {message_id} has been deleted in {channel}.")
+                print("Removing this log from the database.")
+                cur = await bot.conn.cursor()
+                trxn = await cur.execute(f'DELETE FROM resourcebot.payouts WHERE message_id = {message_id}')
+                await trxn.commit()
+                continue
+            reactions = newMsg.reactions
+            for reaction in reactions:
+                async for user in reaction.users():
+                    if user.bot:
+                        pass
+                    else:
+                        for role in user.roles:
+                            if ((role.id in bot.payoutRoles) or (role.id in bot.payerRoles)) and (reaction.emoji == '\U00002705'):
+                                print("Confirmed!")
+                                payoutId = await approvePayout(user.id, message_id)
+                                await user.send(f"You have approved payoutId {payoutId} for {newMsg.author.nick}")
+                                await newMsg.add_reaction('\U0001F197')
+                                break
+                                #removeMessageToMessageList(index)
+                                #TODO error logging
 
-                                else:
-                                    continue
-                print(f"Checked for reactions on {message_id}, didn't find any...")
-                await asyncio.sleep(1)
-            else:
-                print("No messages to check, sleeping...")
-                await asyncio.sleep(1)
+                            elif ((role.id in bot.payoutRoles) or (role.id in bot.payerRoles)) and (reaction.emoji == '\U0000274E'):
+                                print('Rejected!')
+                                await rejectPayout(user.id, message_id)
+                                await newMsg.add_reaction('\U0001F196')
+                                break
+                                #removeMessageToMessageList(index)
+                                #TODO error logging
+
+                            else:
+                                continue
+            #print(f"Checked for reactions on {message_id}, didn't find any...")
+    else:
+        return
+        #print("No messages to check, sleeping...")
+
+@tasks.loop(seconds=600)
+async def updateMemberNames():
+    guilds = bot.guilds
+    for guild in guilds:
+        members = guild.members
+        for member in members:
+            await insertMemberId(member.id, member.display_name)
 
 def addMessageToMessageList(message):
     bot.messagesToCheck.append(message)
@@ -440,10 +451,11 @@ async def resources(ctx):
     await ctx.message.author.send(embed=embed)
     await ctx.message.delete(delay=5)
 
-# @bot.command(description='''Use this to manually approve a payout BY payoutId in the event the bot dies.
-#             The payoutId is in the confirmation message the bot sends when it's logged. No message, it's not
-#             logged.''',
-#              brief="Payout Team Only! Can use this to approve payouts manually if the reactions fail")
+@bot.command(description='''Don't use this anymore, dummy.''',
+             brief="Doesn't work. Use your memory to remember when Michael tells you things!")
+async def approve(ctx):
+    mention = ctx.message.author.mention
+    await ctx.send(f"{mention}, Michael told you this wouldn't work. https://imgflip.com/i/4g431f")
 # async def approve(ctx, payoutId):
 #     #print(bot.payoutRoles)
 #     approver = ctx.message.author
@@ -521,13 +533,13 @@ async def names(ctx):
     print(nick_id)
     return
 
-@bot.command()
-async def needsApproval(ctx):
-    msg_urls =[]
-    for message in bot.messagesToCheck:
-        msg_urls.append(message.jump_url)
-    print(msg_urls)
-    return None
+# @bot.command()
+# async def needsApproval(ctx):
+#     msg_urls =[]
+#     for message in bot.messagesToCheck:
+#         msg_urls.append(message.jump_url)
+#     print(msg_urls)
+#     return None
 
 @bot.command()
 async def channelDetails(ctx):
